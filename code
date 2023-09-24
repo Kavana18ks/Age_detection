@@ -1,0 +1,121 @@
+# Import necessary libraries
+import cv2
+import math
+import time
+import argparse
+
+# Define a function to get face bounding boxes using the face detection model
+def getFaceBox(net, frame, conf_threshold=0.75):
+    # Create a copy of the input frame
+    frameOpencvDnn = frame.copy()
+    
+    # Get the height and width of the frame
+    frameHeight = frameOpencvDnn.shape[0]
+    frameWidth = frameOpencvDnn.shape[1]
+    
+    # Preprocess the frame for the face detection model
+    blob = cv2.dnn.blobFromImage(frameOpencvDnn, 1.0, (300, 300), [104, 117, 123], True, False)
+
+    # Set the input to the face detection model
+    net.setInput(blob)
+    
+    # Perform forward pass and get detections
+    detections = net.forward()
+    bboxes = []
+
+    # Iterate through all detections
+    for i in range(detections.shape[2]):
+        # Get confidence score for the current detection
+        confidence = detections[0, 0, i, 2]
+        
+        # Check if confidence is greater than the specified threshold
+        if confidence > conf_threshold:
+            # Get bounding box coordinates for the face
+            x1 = int(detections[0, 0, i, 3] * frameWidth)
+            y1 = int(detections[0, 0, i, 4] * frameHeight)
+            x2 = int(detections[0, 0, i, 5] * frameWidth)
+            y2 = int(detections[0, 0, i, 6] * frameHeight)
+            
+            # Append the bounding box coordinates to the list
+            bboxes.append([x1, y1, x2, y2])
+            
+            # Draw a rectangle around the detected face on the frame
+            cv2.rectangle(frameOpencvDnn, (x1, y1), (x2, y2), (0, 255, 0), int(round(frameHeight / 150)), 8)
+
+    # Return the frame with bounding boxes and the list of bounding boxes
+    return frameOpencvDnn, bboxes
+
+# File paths for face detection and age estimation models
+faceProto = "opencv_face_detector.pbtxt"
+faceModel = "opencv_face_detector_uint8.pb"
+
+ageProto = "age_deploy.prototxt"
+ageModel = "age_net.caffemodel"
+
+# Mean values for age estimation model and age group labels
+MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
+ageList = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(22-30)', '(35-43)', '(48-53)', '(60-100)']
+
+# Load the face detection and age estimation models
+ageNet = cv2.dnn.readNet(ageModel, ageProto)
+faceNet = cv2.dnn.readNet(faceModel, faceProto)
+
+# Initialize the webcam capture
+cap = cv2.VideoCapture(0)
+
+# Padding value to be used for cropping the face region
+padding = 20
+
+# Start processing frames from the webcam feed
+while cv2.waitKey(1) < 0:
+    # Read a frame from the webcam
+    t = time.time()
+    hasFrame, frame = cap.read()
+
+    # Check if a frame was successfully read
+    if not hasFrame:
+        cv2.waitKey()
+        break
+
+    # Create a smaller frame for better optimization
+    small_frame = cv2.resize(frame, (0, 0), fx=1, fy=1)
+
+    # Get the frame with bounding boxes and the list of bounding boxes
+    frameFace, bboxes = getFaceBox(faceNet, small_frame)
+
+    # Check if any face was detected in the frame
+    if not bboxes:
+        print("No face Detected, Checking next frame")
+        continue
+
+    # Process each detected face
+    for bbox in bboxes:
+        # Crop the region of interest (ROI) around the face
+        face = small_frame[max(0, bbox[1] - padding):min(bbox[3] + padding, frame.shape[0] - 1),
+                max(0, bbox[0] - padding):min(bbox[2] + padding, frame.shape[1] - 1)]
+        
+        # Preprocess the cropped face for the age estimation model
+        blob = cv2.dnn.blobFromImage(face, 1.0, (227, 227), MODEL_MEAN_VALUES, swapRB=False)
+        
+        # Set the input to the age estimation model
+        ageNet.setInput(blob)
+        
+        # Perform forward pass and get age predictions
+        agePreds = ageNet.forward()
+        
+        # Get the age group with the highest probability
+        age = ageList[agePreds[0].argmax()]
+        
+        # Print the age predictions and the estimated age with confidence
+        print("Age Output : {}".format(agePreds))
+        print("Age : {}, conf = {:.3f}".format(age, agePreds[0].max()))
+
+        # Draw the age label on the frame
+        label = "{}".format(age)
+        cv2.putText(frameFace, label, (bbox[0], bbox[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+
+        # Show the frame with age estimation in real-time
+        cv2.imshow("Age Demo", frameFace)
+
+    # Calculate and print the processing time for the current frame
+    print("time : {:.3f}".format(time.time() - t))
